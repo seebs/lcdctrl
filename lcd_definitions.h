@@ -1,0 +1,10 @@
+#define LCD_E_PIN 4
+#define LCD_RW_PIN 3
+#define LCD_RS_PIN 2
+#define LCD_RW_PORT PORTB.OUT
+#define LCD_E_PORT PORTB.OUT
+#define LCD_RS_PORT PORTB.OUT
+#define LCD_PORT PORTC.OUT
+#define LCD_LINES 4
+#define LCD_DISP_LENGTH 20
+
