@@ -40,21 +40,17 @@ static uint8_t cgram_buf[9], cgram_index;
 
 void red(int on) {
     if (on) {
-        _PROTECTED_WRITE(TCA0.SPLIT.HCMP1, 255);
-        // PORTA.OUTSET = 0x8;
+       TCA0.SPLIT.HCMP1 = 0xFF;
     } else {
-        _PROTECTED_WRITE(TCA0.SPLIT.HCMP1, 0);
-        // PORTA.OUTSET = 0x8;
+       TCA0.SPLIT.HCMP1 = 0x0;
     }
 }
 
 void green(int on) {
     if (on) {
-        _PROTECTED_WRITE(TCA0.SPLIT.HCMP2, 255);
-        // PORTA.OUTSET = 0x20;
+        TCA0.SPLIT.HCMP2 = 0xFF;
     } else {
-        _PROTECTED_WRITE(TCA0.SPLIT.HCMP2, 0);
-        // PORTA.OUTCLR = 0x20;
+        TCA0.SPLIT.HCMP2 = 0x0;        
     }
 }
 
@@ -144,9 +140,9 @@ int main(void) {
     _PROTECTED_WRITE(TCA0.SPLIT.HPER, 255);
     // WO3/4/5 are HCMP0/1/2
     _PROTECTED_WRITE(TCA0.SPLIT.CTRLB, TCA_SPLIT_HCMP2EN_bm | TCA_SPLIT_HCMP1EN_bm | TCA_SPLIT_HCMP0EN_bm); 
-    _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, 0x00);
-    _PROTECTED_WRITE(TCA0.SPLIT.HCMP1, 0);
-    _PROTECTED_WRITE(TCA0.SPLIT.HCMP2, 0);
+    TCA0.SPLIT.HCMP0 = 0x80;
+    TCA0.SPLIT.HCMP1 = 0x0;
+    TCA0.SPLIT.HCMP2 = 0x0;
     _PROTECTED_WRITE(TCA0.SPLIT.CTRLA, TCA_SPLIT_ENABLE_bm); // enable
 
     red(1);
@@ -228,7 +224,8 @@ int main(void) {
                 break;
             case LCD_BACKLIGHT:
                 if (twi_ready()) {
-                    _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, twi_get());
+                    // _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, twi_get());
+                    TCA0.SPLIT.HCMP0 = twi_get();
                 } else {
                     prevcmd = LCD_BACKLIGHT;
                     continue;
