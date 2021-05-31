@@ -7,6 +7,7 @@
 
 
 #include <avr/io.h>
+#include <avr/interrupt.h>
 #define F_CPU 20000000L
 #include <util/delay.h>
 #include "lcd_definitions.h"
@@ -35,22 +36,7 @@ void lcd_cgram(uint8_t addr, const uint8_t data[8])
     }
 }
 
-static uint8_t prevcmd;
-uint8_t cgram_buf[9], cgram_index;
-
-uint8_t cmds[] = "hello\nhi there";
-uint8_t *next = cmds;
-
-int available() {
-    return cmds + sizeof(cmds) - next - 1;
-}
-
-int receive() {
-    if (*next != '\0') {
-       return *next++;
-    }
-    return 0;
-}
+static uint8_t cgram_buf[9], cgram_index;
 
 void red(int on) {
     if (on) {
@@ -72,82 +58,186 @@ void green(int on) {
     }
 }
 
+#define TWIBUFSIZ 16
+volatile uint8_t twi_head, twi_tail;
+volatile uint8_t twi_buf[TWIBUFSIZ];
+
+uint8_t twi_get() {
+    if (twi_head == twi_tail) {
+        return 0;
+    }
+    uint8_t c = twi_buf[twi_tail];
+    twi_tail = (twi_tail + 1) % TWIBUFSIZ;
+    return c;
+}
+
+uint8_t twi_ready() {
+    return !(twi_head == twi_tail);
+}
+
+uint8_t twi_put(uint8_t c) {
+    if (((twi_head + 1) % TWIBUFSIZ) == twi_tail) {
+        return 1;
+    }
+    twi_buf[twi_head] = c;
+    twi_head = (twi_head + 1) % TWIBUFSIZ;
+    return 0;
+}
+
+ISR(TWI0_TWIS_vect)
+{
+    if ((TWI0.SSTATUS & (TWI_COLL_bm | TWI_BUSERR_bm)) != 0) {
+        return;
+    }
+
+    if ((TWI0.SSTATUS & TWI_APIF_bm) && (TWI0.SSTATUS & TWI_AP_bm)) {
+        if (TWI0.SSTATUS & TWI_DIR_bm) {
+            // Master wishes to read from slave, which we don't support.
+            TWI0.SCTRLB = TWI_ACKACT_NACK_gc | TWI_SCMD_COMPTRANS_gc;
+        } else {
+            TWI0.SCTRLB = TWI_ACKACT_ACK_gc | TWI_SCMD_RESPONSE_gc;
+        }
+        return;
+    }
+    if (TWI0.SSTATUS & TWI_DIF_bm) {
+        if (TWI0.SSTATUS & TWI_DIR_bm) {
+            // Master wishes to read from slave
+            if (!(TWI0.SSTATUS & TWI_RXACK_bm)) {
+                // Received ACK from master
+                TWI0.SCTRLB = TWI_ACKACT_NACK_gc | TWI_SCMD_COMPTRANS_gc;
+            } else {
+                // Received NACK from master
+                TWI0.SSTATUS |= (TWI_DIF_bm | TWI_APIF_bm);
+                TWI0.SCTRLB = TWI_SCMD_COMPTRANS_gc;
+            }
+        } else // Master wishes to write to slave
+        {
+            // have been sent data. let's take it if we can.
+            if (((twi_head + 1) % TWIBUFSIZ) == twi_tail) {
+                // ... we can't.
+                TWI0.SCTRLB = TWI_ACKACT_NACK_gc | TWI_SCMD_COMPTRANS_gc;
+                return;
+            }
+            if (twi_put(TWI0.SDATA)) {
+                TWI0.SCTRLB = TWI_ACKACT_NACK_gc | TWI_SCMD_COMPTRANS_gc;
+                return;
+            }
+            TWI0.SCTRLB = TWI_ACKACT_ACK_gc | TWI_SCMD_RESPONSE_gc;
+        }
+        return;
+    }
+
+    // Check if STOP was received
+    if ((TWI0.SSTATUS & TWI_APIF_bm) && (!(TWI0.SSTATUS & TWI_AP_bm))) {
+        TWI0.SCTRLB = TWI_SCMD_COMPTRANS_gc;
+        return;
+    }
+}
+
 int main(void) {  
+    // 20 MHz, no divisor
     _PROTECTED_WRITE(CLKCTRL.MCLKCTRLB, 0x0);
+    // set Timer A to split mode (because WO3/4/5 are the convenient pins))
+    PORTA.DIRSET = 0x38;
+    _PROTECTED_WRITE(PORTA.PIN3CTRL, PORTA.PIN3CTRL | PORT_INVEN_bm);
     _PROTECTED_WRITE(TCA0.SINGLE.CTRLD, TCA_SPLIT_SPLITM_bm);
     _PROTECTED_WRITE(TCA0.SPLIT.HPER, 255);
-    _PROTECTED_WRITE(PORTA.PIN3CTRL, PORTA.PIN3CTRL | PORT_INVEN_bm);
     // WO3/4/5 are HCMP0/1/2
-    _PROTECTED_WRITE(TCA0.SINGLE.CTRLB, TCA_SPLIT_HCMP2EN_bm | TCA_SPLIT_HCMP1EN_bm | TCA_SPLIT_HCMP0EN_bm);
-    _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, 0);
+    _PROTECTED_WRITE(TCA0.SPLIT.CTRLB, TCA_SPLIT_HCMP2EN_bm | TCA_SPLIT_HCMP1EN_bm | TCA_SPLIT_HCMP0EN_bm); 
+    _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, 0x00);
     _PROTECTED_WRITE(TCA0.SPLIT.HCMP1, 0);
     _PROTECTED_WRITE(TCA0.SPLIT.HCMP2, 0);
     _PROTECTED_WRITE(TCA0.SPLIT.CTRLA, TCA_SPLIT_ENABLE_bm); // enable
-    PORTA.DIRSET = 0x38;
-    /* Replace with your application code */
-    unsigned char h = TCA0.SPLIT.HCMP2;
+
     red(1);
     lcd_init(LCD_DISP_ON_CURSOR_BLINK);
     green(1);
     lcd_clrscr();
     red(0);
-    lcd_gotoxy(3, 2);
+
+    // TWI setup (mostly stolen from MCC))
+    //SDASETUP 4CYC; SDAHOLD OFF; FMPEN disabled; 
+    TWI0.CTRLA = 0x00;
+    
+    //Debug Run
+    TWI0.DBGCTRL = 0x00;
+    
+    //Slave Address
+    TWI0.SADDR = 0x4E;
+    
+    //ADDRMASK 0; ADDREN disabled; 
+    TWI0.SADDRMASK = 0x00;
+    
+    //ACKACT ACK; SCMD NOACT; 
+    TWI0.SCTRLB = 0x00;
+    
+    //Slave Data
+    TWI0.SDATA = 0x00;
+    
+    //DIF disabled; APIF disabled; COLL disabled; BUSERR disabled; 
+    TWI0.SSTATUS = 0x00;
+    
+    //DIEN enabled; APIEN enabled; PIEN disabled; PMEN disabled; SMEN disabled; ENABLE enabled; 
+    TWI0.SCTRLA = 0xC1;
+    
+    sei();
     green(0);
     
-    while (available() > 0) {
-        uint8_t c;
-        if (prevcmd != 0) {
-            c = prevcmd;
-            prevcmd = 0;
-        } else {
-            c = receive();
-        }
-        // controls done with control characters, but 0-10 are the character graphics range.
-        if (c >= 0x20 || c < 0x10) {
-            lcd_putc(c);
-            continue;
-        }
-        switch (c) {
-        case LCD_NOP: default:
-            break;
-        case LCD_GOTO:
-            // silently fail if there's not a byte available yet
-            if (available() < 1) {
-                prevcmd = c;
-                break;
-            }
-            c = *next++;
-            lcd_gotoxy(c & 0x1F, (c & ~0x1F) >> 5);
-            break;
-        case LCD_SETCGRAM:
-            while (cgram_index < 9) {
-            if (available() < 1) {
-                prevcmd = LCD_SETCGRAM;
-                break;
-            }
-            cgram_buf[cgram_index] = receive();
-          }
-          lcd_cgram(cgram_buf[0], cgram_buf + 1);
-          cgram_index = 0;
-          break;
-        case LCD_BACKLIGHT:
-            if (available() == 1) {
-                c = receive();
-            }
-            _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, c);
-            break;
-        case LCD_CLEAR:
-            lcd_clrscr();
-            break;
-        }
-    }
-    uint8_t toggle = 0;
+    uint8_t c;
+    uint8_t cmd, prevcmd;
+    prevcmd = 0;
     while (1) {
-        _delay_ms(50L);
-        toggle = (toggle + 1) % 16;
-        red(toggle&0x4);
-        green(toggle&0x8);
-        h++;
-        _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, h);
+        if (twi_ready()) {
+            if (prevcmd != 0) {
+                cmd = prevcmd;
+                prevcmd = 0;
+            } else {
+                cmd = twi_get();
+            }
+            // controls done with control characters, but 0-10 are the character graphics range.
+            if (cmd >= 0x20 || cmd < 0x10) {
+                lcd_putc(cmd);
+                continue;
+            }
+            switch (cmd) {
+            case LCD_NOP: default:
+                break;
+            case LCD_GOTO:
+                // silently fail if there's not a byte available yet
+                if (!twi_ready()) {
+                    prevcmd = LCD_GOTO;
+                    continue;
+                }
+                c = twi_get();
+                lcd_gotoxy(c & 0x1F, (c & ~0x1F) >> 5);
+                break;
+            case LCD_SETCGRAM:
+                if (cgram_index < 9) {
+                    if (twi_ready()) {
+                        cgram_buf[cgram_index] = twi_get();
+                        cgram_index++;
+                    }
+                }
+                if (cgram_index == 9) {
+                    lcd_cgram(cgram_buf[0], cgram_buf + 1);
+                    cgram_index = 0;
+                } else {
+                    prevcmd = LCD_SETCGRAM;
+                    continue;
+                }
+                break;
+            case LCD_BACKLIGHT:
+                if (twi_ready()) {
+                    _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, twi_get());
+                } else {
+                    prevcmd = LCD_BACKLIGHT;
+                    continue;
+                }
+                break;
+            case LCD_CLEAR:
+                lcd_clrscr();
+                break;
+            }
+        }
     }
 }
