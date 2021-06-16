@@ -64,19 +64,25 @@ uint8_t twi_get() {
     }
     uint8_t c = twi_buf[twi_tail];
     twi_tail = (twi_tail + 1) % TWIBUFSIZ;
+    red(0);
     return c;
 }
 
 uint8_t twi_ready() {
-    return !(twi_head == twi_tail);
+    uint8_t ready = !(twi_head == twi_tail);
+    green(ready);
+    return ready;
 }
 
 uint8_t twi_put(uint8_t c) {
     if (((twi_head + 1) % TWIBUFSIZ) == twi_tail) {
+        red(1);
         return 1;
     }
     twi_buf[twi_head] = c;
     twi_head = (twi_head + 1) % TWIBUFSIZ;
+    red(0);
+    green(1);
     return 0;
 }
 
@@ -133,14 +139,20 @@ ISR(TWI0_TWIS_vect)
 int main(void) {  
     // 20 MHz, no divisor
     _PROTECTED_WRITE(CLKCTRL.MCLKCTRLB, 0x0);
-    // set Timer A to split mode (because WO3/4/5 are the convenient pins))
     PORTA.DIRSET = 0x38;
+    PORTB.DIRSET = 0x3C;
+    // invert PA3 (because the backlight is controlled by that kind of transistor)
     _PROTECTED_WRITE(PORTA.PIN3CTRL, PORTA.PIN3CTRL | PORT_INVEN_bm);
+
+    // set Timer A to split mode (because WO2/4/5 are the convenient pins))
     _PROTECTED_WRITE(TCA0.SINGLE.CTRLD, TCA_SPLIT_SPLITM_bm);
+    // Set both periods to 255
     _PROTECTED_WRITE(TCA0.SPLIT.HPER, 255);
-    // WO3/4/5 are HCMP0/1/2
+    _PROTECTED_WRITE(TCA0.SPLIT.LPER, 255);
+    // WO3/4/5 are HCMP0/1/2, W0/1/2 are LCMP. We want W03 for backlight, and
+    // W04/W05 for the LEDs.
     _PROTECTED_WRITE(TCA0.SPLIT.CTRLB, TCA_SPLIT_HCMP2EN_bm | TCA_SPLIT_HCMP1EN_bm | TCA_SPLIT_HCMP0EN_bm); 
-    TCA0.SPLIT.HCMP0 = 0x80;
+    TCA0.SPLIT.HCMP0 = 0xff;
     TCA0.SPLIT.HCMP1 = 0x0;
     TCA0.SPLIT.HCMP2 = 0x0;
     _PROTECTED_WRITE(TCA0.SPLIT.CTRLA, TCA_SPLIT_ENABLE_bm); // enable
@@ -150,6 +162,7 @@ int main(void) {
     green(1);
     lcd_clrscr();
     red(0);
+    lcd_putc('a');
 
     // TWI setup (mostly stolen from MCC))
     //SDASETUP 4CYC; SDAHOLD OFF; FMPEN disabled; 
@@ -224,7 +237,6 @@ int main(void) {
                 break;
             case LCD_BACKLIGHT:
                 if (twi_ready()) {
-                    // _PROTECTED_WRITE(TCA0.SPLIT.HCMP0, twi_get());
                     TCA0.SPLIT.HCMP0 = twi_get();
                 } else {
                     prevcmd = LCD_BACKLIGHT;
