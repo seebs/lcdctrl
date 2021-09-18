@@ -5,7 +5,7 @@
  * Created on January 6, 2021, 5:05 PM
  */
 
-
+#include <inttypes.h>
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #define F_CPU 20000000L
@@ -142,7 +142,7 @@ int main(void) {
     PORTA.DIRSET = 0x38;
     PORTB.DIRSET = 0x3C;
     // invert PA3 (because the backlight is controlled by that kind of transistor)
-    _PROTECTED_WRITE(PORTA.PIN3CTRL, PORTA.PIN3CTRL | PORT_INVEN_bm);
+    // _PROTECTED_WRITE(PORTA.PIN3CTRL, PORTA.PIN3CTRL | PORT_INVEN_bm);
 
     // set Timer A to split mode (because WO2/4/5 are the convenient pins))
     _PROTECTED_WRITE(TCA0.SINGLE.CTRLD, TCA_SPLIT_SPLITM_bm);
@@ -158,11 +158,10 @@ int main(void) {
     _PROTECTED_WRITE(TCA0.SPLIT.CTRLA, TCA_SPLIT_ENABLE_bm); // enable
 
     red(1);
-    lcd_init(LCD_DISP_ON_CURSOR_BLINK);
+    lcd_init(LCD_DISP_ON);
     green(1);
     lcd_clrscr();
     red(0);
-    lcd_putc('a');
 
     // TWI setup (mostly stolen from MCC))
     //SDASETUP 4CYC; SDAHOLD OFF; FMPEN disabled; 
@@ -172,7 +171,7 @@ int main(void) {
     TWI0.DBGCTRL = 0x00;
     
     //Slave Address
-    TWI0.SADDR = 0x4E;
+    TWI0.SADDR = 0x64;
     
     //ADDRMASK 0; ADDREN disabled; 
     TWI0.SADDRMASK = 0x00;
